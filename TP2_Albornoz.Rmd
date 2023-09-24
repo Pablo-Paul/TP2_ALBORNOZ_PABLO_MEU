@@ -1,0 +1,269 @@
+---
+title: "TP2_Albornoz"
+author: "Pablo Albornoz"
+date: "2023-09-23"
+output: html_document
+---
+
+## Activación de librerías
+
+Activamos las librerías que vamos a utilizar, para poder manipular los datos y visualizarlos en un gráfico.
+
+```{r}
+library(tidyverse)
+library(sf)
+library(geoAr)
+library(janitor)
+library(geofacet)
+```
+
+## Dataset: Venta de departamentos en CABA
+
+Voy a seguir trabajando con la base de datos BA data sobre departamentos en venta para el año 2020. Directamente cargamos la base de datos con el enlace a la página de [BA data](https://data.buenosaires.gob.ar/dataset/departamentos-venta/resource/e4de7e2b-12af-41fa-832f-7b46e75b44a8) y lo incorporo al *environment* que voy a trabajar con el nombre de Base_Departamentos.
+
+```{r}
+Base_Departamentos <- read_csv("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/departamentos-venta/departamentos-en-venta-2020.csv")
+```
+
+Analizamos sintéticamente los datos que contiene este dataset:
+
+```{r}
+summary(Base_Departamentos)
+dim(Base_Departamentos)
+```
+
+Tenemos un total de 156.258 observaciones (cada fila corresponde a un departamento en venta en CABA), con 11 columnas con datos sobre la dirección, precios, cantidad de ambientes, dirección, entre otras.
+
+Como posteriormente voy a agrupar columnas, me gustaría trabajar los datos de barrio como factor: 
+
+```{r}
+Base_Departamentos$Barrio <- as.factor(Base_Departamentos$Barrio)
+```
+
+Confirmamos: 
+
+```{r}
+summary(Base_Departamentos)
+dim(Base_Departamentos)
+```
+
+## Mapa base
+
+Estos datos los quiero vincular geospacialmente, por lo que incorporo un mapa de la ciudad de Buenos Aires. Cargamos los polígonos para CABA, descargados de [BA Data](https://data.buenosaires.gob.ar/dataset/barrios/resource/dcd11728-8ec5-4082-a81c-7348ac89a48a). El archivo en SHP lo tenemos descargado en la carpeta del proyecto.
+
+```{r}
+Barrios <- st_read("barrios/barrios_wgs84.shp", 
+                        stringsAsFactors = TRUE,
+                        options = "ENCODING=UTF8")
+```
+
+Vemos que el tipo de geometría es un polígono, y su sistema de coordenadas es WGS 84 (World Geodetic System 1984). El código EPSG 4326 se usa comúnmente para referirse a las coordenadas en este sistema.
+
+Hacemos un resumen de los datos: 
+
+```{r}
+summary(Barrios)
+dim(Barrios)
+```
+
+El dataset de barrios posee 48 registros y 6 columnas que indican el nombre del barrio, la comuna a la que pertenece, la superficie en km2 y la geometría (polígonos)
+
+Lo podemos graficar: 
+
+```{r}
+ggplot()+
+  geom_sf(data=Barrios)+
+  theme_minimal()
+```
+
+Limpiamos los dataset, para que coincida el formato del nombre de las columnas y después los podamos unificar.
+
+Departamentos <- Base_Departamentos %>%
+  na.omit() %>% 
+  mutate(Barrio = case_when(
+    Barrio %in% c("FLORES NORTE", "FLORES SUR") ~ "FLORES",
+    Barrio %in% c("BARRACAS ESTE", "BARRACAS OESTE") ~ "BARRACAS",
+    Barrio %in% c("VILLA DEVOTO NORTE", "VILLA DEVOTO SUR") ~ "VILLA DEVOTO",
+    Barrio %in% c("MONTSERRAT") ~ "MONSERRAT",
+    TRUE ~ Barrio  # Mantener el valor original si no coincide con ninguna condición
+  ))
+
+```{r}
+Departamentos <- Base_Departamentos %>%
+  na.omit() %>% 
+  mutate(Barrio = case_when(
+    Barrio %in% c("FLORES NORTE", "FLORES SUR") ~ "FLORES",
+    Barrio %in% c("BARRACAS ESTE", "BARRACAS OESTE") ~ "BARRACAS",
+    Barrio %in% c("VILLA DEVOTO NORTE", "VILLA DEVOTO SUR") ~ "VILLA DEVOTO",
+    Barrio %in% c("MONTSERRAT") ~ "MONSERRAT",
+    TRUE ~ Barrio
+  )) %>% 
+  filter(Ambientes>0)
+```
+
+
+```{r}
+Departamentos <- Departamentos %>%
+  clean_names()
+Barrios <- Barrios %>% 
+  clean_names()
+```
+
+
+## Transformación de datos
+
+Nuestro objetivo es visualizar información sobre la cantidad y valor de los departamentos (en dólares USD) por barrio en CABA y queremos distinguir su precio según la cantidad de ambientes que tengan.
+
+Para ello, primero trabajamos los datos. Realizamos una agrupación para que nos muestre la cantidad de departamentos en cada barrio, distinguido por cantidad de ambientes. Además, agregamos las columnas relativas al valor promedio en dólares de las unidades, tanto el precio promedio de venta como el precio promedio del metro cuadrado (m2)
+
+```{r}
+Deptos_venta <- Departamentos %>% 
+  group_by(barrio, ambientes) %>% 
+  mutate(barrio = str_replace(barrio, "[æ]", "Ñ")) %>% 
+  mutate(barrio = str_replace(barrio, "[?]", "")) %>%
+  summarise(cantidad=n(),
+            valor_promedio_usd=mean(dolares),
+            dolaresM2=mean(dolares_m2)) %>% 
+  mutate(dolaresM2 = round(dolaresM2, 2)) %>% 
+  mutate(barrio = as.factor(barrio))
+```
+
+```{r}
+summary(Deptos_venta)
+dim(Deptos_venta)
+```
+## Visualización de datos
+
+### Cantidad total de departamentos
+
+Vemos la cantidad de departamentos que estaban en venta en CABA durante 2020. 
+
+```{r}
+ggplot(Deptos_venta, aes(x = reorder(barrio, -cantidad), y = cantidad, fill = barrio)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Cantidad total de departamentos por barrio",
+       x = "Barrio",
+       y = "Cantidad total de departamentos") +
+  theme_minimal()+
+  guides(fill = FALSE)+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        plot.title = element_text(hjust = 0.5))
+```
+
+Aquí podemos observar que Palermo es el barrio que destaca por su gran oferta de departamentos que se encontraban venta en 2020, con un total que superaba las 200.000 unidades. Los barrios de Caballito, Belgrano y Recoleta continúan en cuanto a cantidad de departamentos.
+
+Esto podemos visualizarlo en un mapa también, sin embargo, voy a reagrupar los datos para que haya una sola fila por barrio que esté georreferenciada. Por lo tanto, agrupamos solo por barrio.
+
+```{r}
+Deptos_venta_barrio <- Departamentos %>% 
+  group_by(barrio) %>% 
+  mutate(barrio = str_replace(barrio, "[æ]", "Ñ")) %>% 
+  mutate(barrio = str_replace(barrio, "[?]", "")) %>%
+  summarise(cantidad=n(),
+            valor_promedio_usd=mean(dolares),
+            dolaresM2=mean(dolares_m2)) %>% 
+  mutate(dolaresM2 = round(dolaresM2, 2)) %>%
+  mutate(barrio = as.factor(barrio))
+```
+
+Ahora a esta le agrego la georreferencia espacial:
+
+```{r}
+Deptos_venta_geo <- left_join(Barrios, Deptos_venta_barrio, by="barrio")
+```
+
+Ahora podemos graficar en un mapa, donde la graduación de color nos indica la cantidad de departamentos (más oscuro, más departamentos en venta): 
+
+```{r}
+ggplot()+
+  geom_sf(data=Deptos_venta_geo, aes(fill=cantidad))+
+  scale_fill_gradient(low = "ivory", high = "lightsteelblue4") +
+  theme_minimal()
+```
+
+### Precio promedio de los departamentos
+
+Ahora también podemos ver el valor promedio de todos los deptos en venta.
+
+```{r}
+ggplot(Deptos_venta_barrio, aes(x = reorder(barrio, -valor_promedio_usd), y = valor_promedio_usd, fill = barrio)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Precio promedio (USD) de las unidades por barrio",
+       x = "Barrio",
+       y = "Precio promedio") +
+  theme_minimal()+
+  guides(fill = FALSE)+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        plot.title = element_text(hjust = 0.5))
+```
+
+En este caso, los departamentos de Puerto Madero son los de mayor precio, por encima de los 750 mil dólares promedio. Villa Soldati, en tanto, es la que ofrece los departamentos de menor valor.
+
+Vemos esta información en un mapa: 
+
+```{r}
+ggplot()+
+  geom_sf(data=Deptos_venta_geo, aes(fill=valor_promedio_usd))+
+  scale_fill_gradient(low = "ivory", high = "palevioletred4") +
+  theme_minimal()
+```
+
+## Cantidad de departamentos según cantidad de ambientes por barrio
+
+```{r}
+ggplot(Deptos_venta, aes(ambientes, cantidad, fill=barrio))+
+  geom_col()+
+  coord_flip()+
+  theme_bw()+
+  facet_wrap(~ barrio)+
+  guides(fill = FALSE)
+```
+
+Aquí vemos los gráficos dividido por barrio, en donde se puede observar la cantidad de departamentos que hay según su cantidad de ambientes. Podemos ver más en específico, por ejemplo, los barrios de Palermo, Caballito, Belgrano, Recoleta, Almagro, que son los que mayor oferta tienen, e incluyo Puerto Madero. 
+  
+```{r}
+selección <- Deptos_venta %>% 
+  filter(barrio == "PALERMO" | barrio == "CABALLITO" | barrio == "BELGRANO"| barrio == "RECOLETA"| barrio == "ALMAGRO"| barrio == "PUERTO MADERO")
+```
+
+```{r}
+ggplot(selección, aes(ambientes, cantidad, fill=barrio))+
+  geom_col()+
+  coord_flip()+
+  theme_bw()+
+  facet_wrap(~ barrio)+
+  guides(fill = FALSE)
+```
+
+En este caso, podemos ver que cambia un poco el perfil del tipo de unidad en venta. Mientras que en Palermo y Belgrano predominan los departamentos de 2 ambientes, En Recoleta y Caballito son los de tres ambientes.
+
+## Precio promedio de venta según cantidad de ambientes
+
+¿Y qué pasa con los valores en cada barrio de las unidades en venta según su cantidad de ambientes? 
+
+Lo vemos en el siguiente gráfico: 
+
+```{r}
+ggplot(Deptos_venta, aes(ambientes, valor_promedio_usd, fill=barrio))+
+  geom_col()+
+  coord_flip()+
+  theme_bw()+
+  facet_wrap(~ barrio)+
+  guides(fill = FALSE)+
+  scale_x_discrete(labels = scales::label_comma())
+```
+
+Aquí se puede ver el caso de Puerto Madero, el barrio con las unidades más caras.
+
+En detalle, de los barrios seleccionados anteriormente: 
+
+```{r}
+ggplot(selección, aes(ambientes, valor_promedio_usd, fill=barrio))+
+  geom_col()+
+  coord_flip()+
+  theme_bw()+
+  facet_wrap(~ barrio)+
+  guides(fill = FALSE)
+```
+
+Aquí se ve que las unidades de 6 ambientes en Puerto Madero se venden por encima de los 3 millones de pesos. Esto contrasta con los demás Barrios, como el caso de Belgrano, donde las unidades de 6 ambientes se venden por un promedio de 1,3 millones.
